@@ -2,7 +2,7 @@
 """
 extract_patterns.py
 
-Scans .raw files (produced by hunter_domain_search.py) in a directory and
+Scans raw files (produced by extractHunterEmails.py) in a directory and
 extracts each domain's email naming pattern into a single summary file.
 
 Handles both raw file formats:
