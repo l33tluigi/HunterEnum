@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract_patterns.py
+extractFormats.py
 
 Scans raw files (produced by extractHunterEmails.py) in a directory and
 extracts each domain's email naming pattern into a single summary file.
