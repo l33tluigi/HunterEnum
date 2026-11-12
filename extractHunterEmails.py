@@ -2,18 +2,20 @@
 """
 extractHunterEmails.py
 
-Queries the Hunter.io domain-search endpoint for a given domain, paginating
+Queries the Hunter.io domain-search endpoint for a given domain or list of domains, paginating
 through all results (Hunter caps `limit` at 100 per request), saves the raw
 JSON responses to <domain>.raw, and extracts all email addresses found into
 <domain>.emails (one per line).
 
 Usage:
     python3 extractHunterEmails.py <domain> <api_key> [--limit LIMIT] [--force]
+    python3 extractHunterEmails.py --domain-list domains.txt <api_key> [--limit LIMIT] [--force]
 
 Example:
     python3 extractHunterEmails.py example.com YOUR_API_KEY
     python3 extractHunterEmails.py example.com YOUR_API_KEY --limit 50
     python3 extractHunterEmails.py example.com YOUR_API_KEY --force
+    python3 extractHunterEmails.py --domain-list domains.txt YOUR_API_KEY --force
 """
 
 import argparse
@@ -125,21 +127,11 @@ def confirm(prompt_text: str) -> bool:
     return answer in ("y", "yes")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Query Hunter.io domain-search API and extract all emails, paginating as needed.")
-    parser.add_argument("domain", help="Target domain, e.g. example.com")
-    parser.add_argument("api_key", help="Hunter.io API key")
-    parser.add_argument("--limit", type=int, default=MAX_LIMIT,
-                         help=f"Per-request page size, max {MAX_LIMIT} (default: {MAX_LIMIT})")
-    parser.add_argument("--delay", type=float, default=0.5,
-                         help="Delay in seconds between paginated requests (default: 0.5)")
-    parser.add_argument("--force", "-f", action="store_true",
-                         help="Skip the confirmation prompt and proceed automatically "
-                              "(the credit check/estimate is still shown)")
-    args = parser.parse_args()
-
-    domain = args.domain
-    limit = min(args.limit, MAX_LIMIT)
+def process_domain(domain: str, api_key: str, limit: int, delay: float, force: bool) -> bool:
+    """
+    Run the full check -> confirm -> fetch -> save flow for a single domain.
+    Returns True if emails were fetched and saved, False if aborted or errored.
+    """
     raw_filename = f"{domain}.raw"
     emails_filename = f"{domain}.emails"
 
@@ -156,13 +148,13 @@ def main():
     # the confirmation prompt afterward.
     print(f"[*] Checking account credits and estimated cost for '{domain}'...")
 
-    available, used = get_account_credits(args.api_key)
-    total_results, first_page_raw = probe_total_results(domain, args.api_key)
+    available, used = get_account_credits(api_key)
+    total_results, first_page_raw = probe_total_results(domain, api_key)
 
     if total_results is None:
         print("[!] Could not determine result count in advance (probe request failed or errored).", file=sys.stderr)
-        print("[!] Proceeding without a credit estimate is risky; aborting.", file=sys.stderr)
-        sys.exit(1)
+        print(f"[!] Skipping '{domain}' — proceeding without a credit estimate is risky.", file=sys.stderr)
+        return False
 
     estimated_cost = total_results  # Hunter bills ~1 search credit per email result returned
 
@@ -177,11 +169,11 @@ def main():
     else:
         print("[!] Could not retrieve account credit info (continuing without it).", file=sys.stderr)
 
-    if not args.force:
-        proceed = confirm("Proceed with fetching all results?")
+    if not force:
+        proceed = confirm(f"Proceed with fetching all results for '{domain}'?")
         if not proceed:
-            print("[*] Aborted by user. No further requests were made.")
-            sys.exit(0)
+            print(f"[*] Skipped '{domain}' by user. No further requests were made for it.")
+            return False
     else:
         print("[*] --force specified: skipping confirmation prompt, proceeding automatically.")
 
@@ -193,7 +185,7 @@ def main():
         raw_bytes = first_page_raw
     else:
         print(f"[*] Fetching page {page_num} for {domain} (offset={offset}, limit={limit})")
-        raw_bytes = fetch_page(domain, args.api_key, limit, offset)
+        raw_bytes = fetch_page(domain, api_key, limit, offset)
 
     while True:
         try:
@@ -226,10 +218,10 @@ def main():
 
         offset += limit
         page_num += 1
-        time.sleep(args.delay)
+        time.sleep(delay)
 
         print(f"[*] Fetching page {page_num} for {domain} (offset={offset}, limit={limit})")
-        raw_bytes = fetch_page(domain, args.api_key, limit, offset)
+        raw_bytes = fetch_page(domain, api_key, limit, offset)
 
     # Save raw response (all pages, as a JSON array)
     with open(raw_filename, "w") as f:
@@ -242,6 +234,68 @@ def main():
             f.write(email + "\n")
 
     print(f"[+] Extracted {len(all_emails)} unique email(s) to {emails_filename}")
+    return True
+
+
+def load_domain_list(path: str) -> list:
+    """Read a line-delimited file of domains, ignoring blank lines and '#' comments."""
+    domains = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            domains.append(line)
+    return domains
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Query Hunter.io domain-search API and extract all emails, paginating as needed.")
+    parser.add_argument("domain", nargs="?", default=None,
+                         help="Target domain, e.g. example.com (omit if using --domain-list)")
+    parser.add_argument("api_key", help="Hunter.io API key")
+    parser.add_argument("--domain-list", metavar="FILE",
+                         help="Path to a line-delimited file of domains to process instead of a single domain")
+    parser.add_argument("--limit", type=int, default=MAX_LIMIT,
+                         help=f"Per-request page size, max {MAX_LIMIT} (default: {MAX_LIMIT})")
+    parser.add_argument("--delay", type=float, default=0.5,
+                         help="Delay in seconds between paginated requests (default: 0.5)")
+    parser.add_argument("--force", "-f", action="store_true",
+                         help="Skip the confirmation prompt and proceed automatically "
+                              "(the credit check/estimate is still shown)")
+    args = parser.parse_args()
+
+    if args.domain_list and args.domain:
+        parser.error("provide either a single domain or --domain-list, not both")
+    if not args.domain_list and not args.domain:
+        parser.error("you must provide either a domain or --domain-list")
+
+    limit = min(args.limit, MAX_LIMIT)
+
+    if args.domain_list:
+        try:
+            domains = load_domain_list(args.domain_list)
+        except OSError as e:
+            print(f"[!] Could not read domain list '{args.domain_list}': {e}", file=sys.stderr)
+            sys.exit(1)
+
+        if not domains:
+            print(f"[!] No domains found in '{args.domain_list}'.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"[*] Loaded {len(domains)} domain(s) from '{args.domain_list}'.")
+
+        succeeded, skipped = [], []
+        for i, domain in enumerate(domains, start=1):
+            print(f"\n==== [{i}/{len(domains)}] {domain} ====")
+            ok = process_domain(domain, args.api_key, limit, args.delay, args.force)
+            (succeeded if ok else skipped).append(domain)
+
+        print(f"\n[*] Done. {len(succeeded)} domain(s) completed, {len(skipped)} skipped/errored.")
+        if skipped:
+            print(f"[*] Skipped: {', '.join(skipped)}")
+    else:
+        process_domain(args.domain, args.api_key, limit, args.delay, args.force)
 
 
 if __name__ == "__main__":
