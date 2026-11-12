@@ -7,12 +7,6 @@ through all results (Hunter caps `limit` at 100 per request), saves the raw
 JSON responses to <domain>.raw, and extracts all email addresses found into
 <domain>.emails (one per line).
 
-Before pulling the full result set, the script does a cheap 1-result probe
-to find out how many emails Hunter has for the domain, checks your account's
-remaining search credits, and asks you to confirm before spending them.
-The credit check and estimate are always shown (even with --force), which
-only skips the confirmation prompt itself.
-
 Usage:
     python3 extractHunterEmails.py <domain> <api_key> [--limit LIMIT] [--force]
 
